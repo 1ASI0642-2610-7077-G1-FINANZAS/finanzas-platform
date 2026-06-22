@@ -38,6 +38,7 @@ public class CreditoService {
                 .moneda(ConfiguracionCredito.Moneda.valueOf(dto.getMoneda().name()))
                 .tipoTasa(dto.getTipoTasa())
                 .tasaInteres(dto.getTasaInteres())
+                .tasaDescuento(dto.getTasaDescuento()) // <-- NUEVO: Guardar el COK en la BD
                 .frecuenciaCapitalizacion(dto.getFrecuenciaCapitalizacion())
                 .plazoMeses(dto.getPlazoMeses())
                 .tipoGracia(dto.getTipoGracia())
@@ -48,12 +49,13 @@ public class CreditoService {
                 .build();
         configRepository.save(config);
 
+        // <-- NUEVO: Pasar dto.getTasaDescuento() al motor
         ResultadoCalculoDTO resultado = motorFinanciero.calcular(
                 dto.getPrecioVehiculo(), dto.getCuotaInicial(), dto.getValorResidual(),
                 dto.getTasaInteres(), dto.getTipoTasa(), dto.getFrecuenciaCapitalizacion(),
                 dto.getPlazoMeses(), dto.getTipoGracia(), dto.getPeriodoGracia(),
                 dto.getSeguroDesgravamen(), dto.getSeguroVehicular(), dto.getPortes(),
-                dto.getFechaInicio()
+                dto.getFechaInicio(), dto.getTasaDescuento()
         );
 
         Credito credito = Credito.builder()
@@ -93,12 +95,13 @@ public class CreditoService {
     }
 
     public ResultadoCalculoDTO simular(CreditoRequestDTO dto) {
+        // <-- NUEVO: Pasar dto.getTasaDescuento() al motor
         return motorFinanciero.calcular(
                 dto.getPrecioVehiculo(), dto.getCuotaInicial(), dto.getValorResidual(),
                 dto.getTasaInteres(), dto.getTipoTasa(), dto.getFrecuenciaCapitalizacion(),
                 dto.getPlazoMeses(), dto.getTipoGracia(), dto.getPeriodoGracia(),
                 dto.getSeguroDesgravamen(), dto.getSeguroVehicular(), dto.getPortes(),
-                dto.getFechaInicio()
+                dto.getFechaInicio(), dto.getTasaDescuento()
         );
     }
 

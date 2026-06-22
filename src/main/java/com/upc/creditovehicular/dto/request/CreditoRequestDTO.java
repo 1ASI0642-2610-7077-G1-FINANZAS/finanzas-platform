@@ -25,6 +25,9 @@ public class CreditoRequestDTO {
     @NotNull @DecimalMin("0.0001")
     private BigDecimal tasaInteres; // En porcentaje (ej: 12.00 para 12%)
 
+    @NotNull @DecimalMin("0.00")
+    private BigDecimal tasaDescuento; // <-- NUEVO: COK (%) para el VAN
+
     private ConfiguracionCredito.FrecuenciaCapitalizacion frecuenciaCapitalizacion;
 
     @NotNull @Min(1) @Max(72)

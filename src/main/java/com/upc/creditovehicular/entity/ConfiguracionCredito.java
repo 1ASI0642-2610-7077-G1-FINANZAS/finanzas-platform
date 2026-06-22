@@ -56,6 +56,9 @@ public class ConfiguracionCredito {
     @Column(name = "seguro_vehicular", precision = 6, scale = 4)
     private BigDecimal seguroVehicular;
 
+    @Column(name = "tasa_descuento", precision = 12, scale = 4)
+    private BigDecimal tasaDescuento;
+
     @Column(name = "portes", precision = 8, scale = 2)
     private BigDecimal portes;
 

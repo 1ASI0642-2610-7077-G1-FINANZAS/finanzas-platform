@@ -15,10 +15,7 @@ import java.util.List;
 
 /**
  * Motor Financiero - Sistema Francés Vencido Ordinario con Valor Residual
- * Método Compra Inteligente - BCP
- *
- * Convención: año ordinario 360 días, mes de 30 días (sistema financiero peruano)
- * Precisión intermedia: 8 decimales | Resultados finales: 2 decimales (montos), 8 decimales (tasas)
+ * Método Compra Inteligente - Adaptado a modelo BCP/Interbank
  */
 @Service
 public class MotorFinancieroService {
@@ -44,100 +41,110 @@ public class MotorFinancieroService {
             BigDecimal seguroDesgravamen,
             BigDecimal seguroVehicular,
             BigDecimal portes,
-            LocalDate fechaInicio
+            LocalDate fechaInicio,
+            BigDecimal tasaDescuento // <-- NUEVO: COK (%) para el cálculo correcto del VAN
     ) {
-        // 1. Monto del préstamo y capital amortizable
+        // 1. Monto del préstamo (Desembolso inicial)
         BigDecimal montoPrestamo = precioVehiculo.subtract(cuotaInicial);
-        BigDecimal capitalAmortizable = montoPrestamo.subtract(valorResidual);
 
-        // 2. Convertir tasa a TEA y TEM
+        // 2. Convertir tasas principales
         BigDecimal tea = convertirATEA(tasaInteres, tipoTasa, frecuencia);
         BigDecimal tem = convertirTEAaTEM(tea);
+        BigDecimal tasaDesgravamenDecimal = seguroDesgravamen.divide(BigDecimal.valueOf(100), MC);
 
-        // 3. Calcular cuota ordinaria inicial sobre capital amortizable
-        BigDecimal cuotaOrdinaria = calcularCuotaFrancesa(capitalAmortizable, tem, plazoMeses);
-
-        // 4. Iterar cronograma
+        // 3. Preparar variables de iteración
         List<CronogramaFilaDTO> filas = new ArrayList<>();
         BigDecimal saldo = montoPrestamo;
         BigDecimal totalIntereses = BigDecimal.ZERO;
         BigDecimal totalPagado = BigDecimal.ZERO;
+
+        // Array de Flujos para TIR/TCEA y VAN. Flujo 0 es POSITIVO.
         List<BigDecimal> flujos = new ArrayList<>();
-        flujos.add(montoPrestamo.negate()); // Flujo 0: desembolso
+        flujos.add(montoPrestamo);
 
         int cuotaNum = 1;
 
-        // --- Período de gracia ---
+        // ==========================================
+        // --- PERÍODO DE GRACIA ---
+        // ==========================================
         for (int k = 0; k < periodoGracia; k++) {
-            BigDecimal interes = saldo.multiply(tem, MC).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-            BigDecimal amortizacion = BigDecimal.ZERO;
+            BigDecimal saldoInicialPeriodo = saldo;
+            BigDecimal interes = saldoInicialPeriodo.multiply(tem, MC).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+            BigDecimal segDesgrav = saldoInicialPeriodo.multiply(tasaDesgravamenDecimal, MC).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+            BigDecimal segVeh = precioVehiculo.multiply(seguroVehicular.divide(BigDecimal.valueOf(100), MC)).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+
             BigDecimal cuotaPeriodo;
+            BigDecimal amortizacion = BigDecimal.ZERO;
             CronogramaPago.TipoPeriodo tipo;
 
             if (tipoGracia == ConfiguracionCredito.TipoGracia.TOTAL) {
-                saldo = saldo.add(interes); // capitalización
+                saldo = saldoInicialPeriodo.add(interes); // Capitaliza
                 cuotaPeriodo = BigDecimal.ZERO;
-                interes = BigDecimal.ZERO; // no se paga, se capitaliza
+                interes = BigDecimal.ZERO; // Visualmente en la cuota no se paga interés
                 tipo = CronogramaPago.TipoPeriodo.GRACIA_TOTAL;
-            } else {
+            } else { // GRACIA PARCIAL
                 cuotaPeriodo = interes;
                 tipo = CronogramaPago.TipoPeriodo.GRACIA_PARCIAL;
             }
 
-            BigDecimal segDesgrav = saldo.multiply(seguroDesgravamen.divide(BigDecimal.valueOf(100), MC))
-                    .setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-            BigDecimal segVeh = precioVehiculo.multiply(seguroVehicular.divide(BigDecimal.valueOf(100), MC))
-                    .setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-            BigDecimal cuotaTotal = cuotaPeriodo.add(segDesgrav).add(segVeh).add(portes)
-                    .setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-
-            BigDecimal saldoFinal = saldo.subtract(amortizacion).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+            BigDecimal cuotaTotal = cuotaPeriodo.add(segDesgrav).add(segVeh).add(portes).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+            BigDecimal saldoFinal = saldo;
 
             filas.add(CronogramaFilaDTO.builder()
                     .numeroCuota(cuotaNum++)
                     .fechaPago(fechaInicio.plusMonths(k + 1))
-                    .saldoInicial(saldo.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
-                    .interes(interes.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
+                    .saldoInicial(saldoInicialPeriodo.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
+                    .interes(interes)
                     .amortizacion(amortizacion)
                     .seguroDesgravamen(segDesgrav)
                     .seguroVehicular(segVeh)
                     .portes(portes)
                     .cuotaTotal(cuotaTotal)
-                    .saldoFinal(saldoFinal)
+                    .saldoFinal(saldoFinal.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
                     .tipoPeriodo(tipo)
                     .build());
 
             totalIntereses = totalIntereses.add(interes);
             totalPagado = totalPagado.add(cuotaTotal);
-            flujos.add(cuotaTotal.negate());
-            saldo = saldoFinal;
+            flujos.add(cuotaTotal.negate()); // Flujo de salida es negativo
         }
 
-        // Recalcular cuota si hubo período de gracia
-        if (periodoGracia > 0) {
-            int cuotasRestantes = plazoMeses - periodoGracia;
-            BigDecimal capitalRestante = saldo.subtract(valorResidual);
-            cuotaOrdinaria = calcularCuotaFrancesa(capitalRestante, tem, cuotasRestantes);
-        }
+        // ==========================================
+        // --- CUOTAS ORDINARIAS (Con Valor Residual)
+        // ==========================================
+        int cuotasRestantes = plazoMeses - periodoGracia;
 
-        // --- Cuotas ordinarias ---
-        int cuotasOrdinarias = plazoMeses - periodoGracia;
-        for (int k = 0; k < cuotasOrdinarias; k++) {
-            BigDecimal interes = saldo.multiply(tem, MC).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-            BigDecimal amortizacion = cuotaOrdinaria.subtract(interes).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-            BigDecimal saldoFinal = saldo.subtract(amortizacion).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+        // Calcular cuota constante que incluye el seguro de desgravamen y respeta el Valor Residual
+        BigDecimal iTotal = tem.add(tasaDesgravamenDecimal, MC);
+        BigDecimal cuotaOrdinaria = calcularCuotaCompraInteligente(saldo, valorResidual, iTotal, cuotasRestantes);
 
-            BigDecimal segDesgrav = saldo.multiply(seguroDesgravamen.divide(BigDecimal.valueOf(100), MC))
-                    .setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-            BigDecimal segVeh = precioVehiculo.multiply(seguroVehicular.divide(BigDecimal.valueOf(100), MC))
-                    .setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-            BigDecimal cuotaTotal = cuotaOrdinaria.add(segDesgrav).add(segVeh).add(portes)
-                    .setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+        for (int k = 0; k < cuotasRestantes; k++) {
+            boolean esUltimoMes = (k == cuotasRestantes - 1);
+
+            BigDecimal saldoInicialPeriodo = saldo;
+            BigDecimal interes = saldoInicialPeriodo.multiply(tem, MC).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+            BigDecimal segDesgrav = saldoInicialPeriodo.multiply(tasaDesgravamenDecimal, MC).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+            BigDecimal segVeh = precioVehiculo.multiply(seguroVehicular.divide(BigDecimal.valueOf(100), MC)).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+
+            // La amortización es la cuota constante menos interés y seguros
+            BigDecimal amortizacion = cuotaOrdinaria.subtract(interes).subtract(segDesgrav).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+
+            BigDecimal saldoFinal = saldoInicialPeriodo.subtract(amortizacion).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+            BigDecimal cuotaTotal = interes.add(amortizacion).add(segDesgrav).add(segVeh).add(portes).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+
+            BigDecimal flujoPeriodo = cuotaTotal.negate();
+
+            // Lógica para la última cuota (Se paga el Valor Residual / Balloon)
+            if (esUltimoMes) {
+                saldoFinal = BigDecimal.ZERO;
+                flujoPeriodo = flujoPeriodo.subtract(valorResidual); // Flujo salta porque se suma el desembolso del VR
+                totalPagado = totalPagado.add(valorResidual);
+            }
 
             filas.add(CronogramaFilaDTO.builder()
                     .numeroCuota(cuotaNum++)
                     .fechaPago(fechaInicio.plusMonths(periodoGracia + k + 1))
-                    .saldoInicial(saldo.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
+                    .saldoInicial(saldoInicialPeriodo.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
                     .interes(interes)
                     .amortizacion(amortizacion)
                     .seguroDesgravamen(segDesgrav)
@@ -150,53 +157,31 @@ public class MotorFinancieroService {
 
             totalIntereses = totalIntereses.add(interes);
             totalPagado = totalPagado.add(cuotaTotal);
-            flujos.add(cuotaTotal.negate());
+            flujos.add(flujoPeriodo);
             saldo = saldoFinal;
         }
 
-        // --- Cuota Balloon (período n+1) ---
-        BigDecimal interesBalloon = saldo.multiply(tem, MC).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-        BigDecimal cuotaBalloon = saldo.add(interesBalloon).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-        BigDecimal segDesgravBalloon = saldo.multiply(seguroDesgravamen.divide(BigDecimal.valueOf(100), MC))
-                .setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-        BigDecimal segVehBalloon = precioVehiculo.multiply(seguroVehicular.divide(BigDecimal.valueOf(100), MC))
-                .setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
-        BigDecimal cuotaTotalBalloon = cuotaBalloon.add(segDesgravBalloon).add(segVehBalloon).add(portes)
-                .setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
+        // ==========================================
+        // --- INDICADORES FINANCIEROS
+        // ==========================================
 
-        filas.add(CronogramaFilaDTO.builder()
-                .numeroCuota(cuotaNum)
-                .fechaPago(fechaInicio.plusMonths(plazoMeses + 1))
-                .saldoInicial(saldo.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
-                .interes(interesBalloon)
-                .amortizacion(saldo.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
-                .seguroDesgravamen(segDesgravBalloon)
-                .seguroVehicular(segVehBalloon)
-                .portes(portes)
-                .cuotaTotal(cuotaTotalBalloon)
-                .saldoFinal(BigDecimal.ZERO)
-                .tipoPeriodo(CronogramaPago.TipoPeriodo.BALLOON)
-                .build());
+        // Tasa de descuento mensual (COKi) para el VAN
+        BigDecimal cokDecimal = (tasaDescuento != null) ? tasaDescuento.divide(BigDecimal.valueOf(100), MC) : BigDecimal.ZERO;
+        BigDecimal cokMensual = convertirTEAaTEM(cokDecimal);
 
-        totalIntereses = totalIntereses.add(interesBalloon);
-        totalPagado = totalPagado.add(cuotaTotalBalloon);
-        flujos.add(cuotaTotalBalloon.negate());
-
-        // 5. Indicadores financieros
-        BigDecimal van = calcularVAN(flujos, tem);
+        BigDecimal van = calcularVAN(flujos, cokMensual); // <-- Ahora usa el COK mensual
         BigDecimal tirMensual = calcularTIR(flujos);
-        BigDecimal tirAnual = anualizar(tirMensual);
-        BigDecimal tcea = tirAnual; // TCEA = TIR del flujo total con todos los costos
+        BigDecimal tcea = anualizar(tirMensual);
 
         return ResultadoCalculoDTO.builder()
                 .tea(tea.setScale(ESCALA_TASA, RoundingMode.HALF_UP))
                 .tem(tem.setScale(ESCALA_TASA, RoundingMode.HALF_UP))
                 .cuotaOrdinaria(cuotaOrdinaria.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
-                .cuotaBalloon(cuotaBalloon.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
+                .cuotaBalloon(valorResidual.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
                 .totalIntereses(totalIntereses.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
                 .totalPagado(totalPagado.setScale(ESCALA_MONTO, RoundingMode.HALF_UP))
                 .van(van.setScale(4, RoundingMode.HALF_UP))
-                .tir(tirAnual.setScale(ESCALA_TASA, RoundingMode.HALF_UP))
+                .tir(tirMensual.setScale(ESCALA_TASA, RoundingMode.HALF_UP)) // Convención: devolver la mensual o anual según prefieras
                 .tcea(tcea.setScale(ESCALA_TASA, RoundingMode.HALF_UP))
                 .cronograma(filas)
                 .build();
@@ -206,13 +191,7 @@ public class MotorFinancieroService {
     // CONVERSIÓN DE TASAS
     // =========================================================================
 
-    /**
-     * Convierte TNA a TEA según frecuencia de capitalización
-     * TEA = (1 + TNA/m)^m - 1
-     * Si ya es efectiva, retorna directamente
-     */
-    public BigDecimal convertirATEA(BigDecimal tasa, ConfiguracionCredito.TipoTasa tipo,
-                                     ConfiguracionCredito.FrecuenciaCapitalizacion frecuencia) {
+    public BigDecimal convertirATEA(BigDecimal tasa, ConfiguracionCredito.TipoTasa tipo, ConfiguracionCredito.FrecuenciaCapitalizacion frecuencia) {
         if (tipo == ConfiguracionCredito.TipoTasa.EFECTIVA) {
             return tasa.divide(BigDecimal.valueOf(100), MC);
         }
@@ -222,29 +201,29 @@ public class MotorFinancieroService {
         return base.pow(m, MC).subtract(BigDecimal.ONE);
     }
 
-    /**
-     * TEA a TEM: TEM = (1 + TEA)^(1/12) - 1
-     * Convención año ordinario 360 días, mes 30 días
-     */
     public BigDecimal convertirTEAaTEM(BigDecimal tea) {
+        if (tea.compareTo(BigDecimal.ZERO) == 0) return BigDecimal.ZERO;
         double teaDouble = tea.doubleValue();
-        double temDouble = Math.pow(1 + teaDouble, 1.0 / 12.0) - 1;
+        double temDouble = Math.pow(1 + teaDouble, 30.0 / 360.0) - 1; // Equivalente a 1/12
         return BigDecimal.valueOf(temDouble).setScale(ESCALA_TASA, RoundingMode.HALF_UP);
     }
 
     // =========================================================================
-    // CUOTA FRANCESA
+    // CUOTA COMPRA INTELIGENTE (Equivalente a Excel PAGO)
     // =========================================================================
 
     /**
-     * C = (P × TEM × (1+TEM)^n) / ((1+TEM)^n - 1)
-     * P = capital amortizable (monto_prestamo - valor_residual)
+     * Fórmula equivalente a la función PAGO de Excel con un Valor Final (-VR).
+     * C = [ P * i - RV * i / (1+i)^n ] / [ 1 - 1/(1+i)^n ]
      */
-    public BigDecimal calcularCuotaFrancesa(BigDecimal capital, BigDecimal tem, int n) {
-        double temD = tem.doubleValue();
-        double capD = capital.doubleValue();
-        double factor = Math.pow(1 + temD, n);
-        double cuota = (capD * temD * factor) / (factor - 1);
+    public BigDecimal calcularCuotaCompraInteligente(BigDecimal capital, BigDecimal valorResidual, BigDecimal iTotal, int n) {
+        double iTot = iTotal.doubleValue();
+        double p = capital.doubleValue();
+        double rv = valorResidual.doubleValue();
+
+        double factor = Math.pow(1 + iTot, n);
+        double cuota = (p * iTot - (rv * iTot / factor)) / (1 - (1 / factor));
+
         return BigDecimal.valueOf(cuota).setScale(ESCALA_MONTO, RoundingMode.HALF_UP);
     }
 
@@ -252,24 +231,17 @@ public class MotorFinancieroService {
     // INDICADORES FINANCIEROS
     // =========================================================================
 
-    /**
-     * VAN = -montoPrestamo + Σ [CuotaTotal_k / (1 + TEM)^k]
-     */
-    public BigDecimal calcularVAN(List<BigDecimal> flujos, BigDecimal tem) {
-        double temD = tem.doubleValue();
+    public BigDecimal calcularVAN(List<BigDecimal> flujos, BigDecimal cokMensual) {
+        double cok = cokMensual.doubleValue();
         double van = 0;
         for (int k = 0; k < flujos.size(); k++) {
-            van += flujos.get(k).doubleValue() / Math.pow(1 + temD, k);
+            van += flujos.get(k).doubleValue() / Math.pow(1 + cok, k);
         }
         return BigDecimal.valueOf(van);
     }
 
-    /**
-     * TIR mensual por Newton-Raphson
-     * Monto_Préstamo = Σ [CuotaTotal_k / (1 + r)^k]
-     */
     public BigDecimal calcularTIR(List<BigDecimal> flujos) {
-        double r = 0.01; // estimación inicial 1% mensual
+        double r = 0.01;
         int maxIter = 1000;
         double tolerancia = 1e-10;
 
@@ -291,11 +263,8 @@ public class MotorFinancieroService {
         return BigDecimal.valueOf(r);
     }
 
-    /**
-     * TIR anual = (1 + TIR_mensual)^12 - 1
-     */
     public BigDecimal anualizar(BigDecimal tirMensual) {
-        double tir = Math.pow(1 + tirMensual.doubleValue(), 12) - 1;
+        double tir = Math.pow(1 + tirMensual.doubleValue(), 360.0 / 30.0) - 1; // Equivalente a ^12
         return BigDecimal.valueOf(tir);
     }
 

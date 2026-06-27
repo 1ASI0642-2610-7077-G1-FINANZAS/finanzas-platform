@@ -5,10 +5,12 @@ import com.upc.creditovehicular.dto.response.ResultadoCalculoDTO;
 import com.upc.creditovehicular.entity.*;
 import com.upc.creditovehicular.repository.*;
 import com.upc.creditovehicular.service.MotorFinancieroService;
+import com.upc.creditovehicular.service.MotorFinancieroService_V2;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 @Service
@@ -24,6 +26,7 @@ public class CreditoService {
     private final UsuarioRepository usuarioRepository;
     private final HistorialCambiosRepository historialRepository;
     private final MotorFinancieroService motorFinanciero;
+    private final MotorFinancieroService_V2 motorFinancieroServiceV2;
 
     @Transactional
     public ResultadoCalculoDTO crearCredito(CreditoRequestDTO dto, String username) {
@@ -50,7 +53,7 @@ public class CreditoService {
         configRepository.save(config);
 
         // <-- NUEVO: Pasar dto.getTasaDescuento() al motor
-        ResultadoCalculoDTO resultado = motorFinanciero.calcular(
+        ResultadoCalculoDTO resultado = motorFinancieroServiceV2.calcular(
                 dto.getPrecioVehiculo(), dto.getCuotaInicial(), dto.getValorResidual(),
                 dto.getTasaInteres(), dto.getTipoTasa(), dto.getFrecuenciaCapitalizacion(),
                 dto.getPlazoMeses(), dto.getTipoGracia(), dto.getPeriodoGracia(),
@@ -70,12 +73,20 @@ public class CreditoService {
 
         List<CronogramaPago> filas = resultado.getCronograma().stream()
                 .map(f -> CronogramaPago.builder()
-                        .credito(credito).numeroCuota(f.getNumeroCuota()).fechaPago(f.getFechaPago())
-                        .saldoInicial(f.getSaldoInicial()).interes(f.getInteres())
-                        .amortizacion(f.getAmortizacion()).seguroDesgravamen(f.getSeguroDesgravamen())
-                        .seguroVehicular(f.getSeguroVehicular()).portes(f.getPortes())
-                        .cuotaTotal(f.getCuotaTotal()).saldoFinal(f.getSaldoFinal())
-                        .tipoPeriodo(f.getTipoPeriodo()).build())
+                        .credito(credito)
+                        .numeroCuota(f.getNumeroCuota())
+                        .fechaPago(f.getFechaPago())
+                        // Sumamos Balloon + Regular para guardar en la BD
+                        .saldoInicial(f.getBalloonSaldoInicial().add(f.getRegularSaldoInicial()))
+                        .interes(f.getBalloonInteres().add(f.getRegularInteres()))
+                        .amortizacion(f.getBalloonAmortizacion().add(f.getRegularAmortizacion()))
+                        .seguroDesgravamen(f.getBalloonSeguro().add(f.getRegularSeguro()))
+                        .seguroVehicular(BigDecimal.ZERO)
+                        .portes(f.getRegularPortes())
+                        .cuotaTotal(f.getRegularCuotaTotal())
+                        .saldoFinal(f.getBalloonSaldoFinal().add(f.getRegularSaldoFinal()))
+                        .tipoPeriodo(f.getTipoPeriodo().equals("G") ? CronogramaPago.TipoPeriodo.GRACIA_TOTAL : CronogramaPago.TipoPeriodo.ORDINARIO)
+                        .build())
                 .toList();
         cronogramaRepository.saveAll(filas);
 
@@ -96,7 +107,7 @@ public class CreditoService {
 
     public ResultadoCalculoDTO simular(CreditoRequestDTO dto) {
         // <-- NUEVO: Pasar dto.getTasaDescuento() al motor
-        return motorFinanciero.calcular(
+        return motorFinancieroServiceV2.calcular(
                 dto.getPrecioVehiculo(), dto.getCuotaInicial(), dto.getValorResidual(),
                 dto.getTasaInteres(), dto.getTipoTasa(), dto.getFrecuenciaCapitalizacion(),
                 dto.getPlazoMeses(), dto.getTipoGracia(), dto.getPeriodoGracia(),

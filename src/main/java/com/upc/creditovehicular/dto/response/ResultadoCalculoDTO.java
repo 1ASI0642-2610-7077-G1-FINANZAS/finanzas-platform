@@ -15,5 +15,5 @@ public class ResultadoCalculoDTO {
     private BigDecimal van;
     private BigDecimal tir;
     private BigDecimal tcea;
-    private List<CronogramaFilaDTO> cronograma;
+    private List<CronogramaFilaDTO2> cronograma;
 }

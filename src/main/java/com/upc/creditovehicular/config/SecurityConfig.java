@@ -72,9 +72,7 @@ public class SecurityConfig {
         CorsConfiguration configuration =
                 new CorsConfiguration();
 
-        configuration.setAllowedOriginPatterns(
-                List.of(frontendUrl, "http://localhost:4200", "http://localhost:*")
-        );
+        configuration.setAllowedOriginPatterns(List.of("*"));
 
         configuration.setAllowedMethods(
                 List.of(
